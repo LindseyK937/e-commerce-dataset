@@ -236,6 +236,119 @@ at_risk_valuable <- rfm_data %>%
   head(10)
 print("High-Value Customers At Risk:")
 print(at_risk_valuable)
-# Export for business use
-write.csv(rfm_data, "rfm_analysis_results.csv", row.names = FALSE)
-write.csv(segment_strategies, "customer_segments_with_actions.csv", row.names = FALSE)
+
+#Time series forecasting
+#Loading required packages
+library(forecast)
+library(tseries)
+library(lubridate)
+
+# Convert invoice_date to proper date format and extract daily sales
+time_series_data <- commerce_data_clean %>%
+  mutate(
+    invoice_date = as.Date(invoice_date, format = "%d/%m/%Y"),
+    total_sales = quantity * unit_price
+  ) 
+# Check for NA dates and date range
+print("Date range and NA check:")
+print(summary(time_series_data$invoice_date))
+print(paste("NA dates:", sum(is.na(time_series_data$invoice_date))))
+print(paste("Min date:", min(time_series_data$invoice_date, na.rm = TRUE)))
+print(paste("Max date:", max(time_series_data$invoice_date, na.rm = TRUE)))
+
+# Remove rows with NA dates first
+time_series_data_clean <- commerce_data_clean %>%
+  mutate(
+    invoice_date = as.Date(invoice_date, format = "%d/%m/%Y")
+  ) %>%
+  filter(!is.na(invoice_date)) 
+print(paste("Rows after removing NA dates:", nrow(time_series_data_clean)))
+#create weekly aggregation 
+weekly_data <- time_series_data_clean %>%
+  mutate(
+    total_sales = quantity * unit_price,
+    year_week = floor_date(invoice_date, "week")  # Group by week starting Monday
+  ) %>%
+  group_by(year_week) %>%
+  summarise(
+    weekly_sales = sum(total_sales, na.rm = TRUE),
+    weekly_orders = n_distinct(invoice_no),
+    weekly_customers = n_distinct(customer_id),
+    avg_order_value = weekly_sales / weekly_orders,
+    active_days = n_distinct(invoice_date)  # How many days had sales each week
+  ) %>%
+  arrange(year_week)
+
+# Check the weekly data
+print(head(weekly_data))
+print(paste("Total weeks of data:", nrow(weekly_data)))
+print(paste("Date range:", min(weekly_data$year_week), "to", max(weekly_data$year_week)))
+
+# Create weekly time series objects
+weekly_sales_ts <- ts(weekly_data$weekly_sales, frequency = 52)
+weekly_orders_ts <- ts(weekly_data$weekly_orders, frequency = 52)
+
+# Plot the weekly series
+par(mfrow = c(2, 1))
+plot(weekly_sales_ts, main = "Weekly Sales Time Series", ylab = "Sales Amount", col = "blue")
+plot(weekly_orders_ts, main = "Weekly Orders Time Series", ylab = "Number of Orders", col = "darkgreen")
+
+# ARIMA model forecasting for weekly data
+arima_sales_weekly <- auto.arima(weekly_sales_ts, seasonal = TRUE)
+arima_orders_weekly <- auto.arima(weekly_orders_ts, seasonal = TRUE)
+
+print("Weekly ARIMA Sales Model:")
+print(summary(arima_sales_weekly))
+
+print("Weekly ARIMA Orders Model:")
+print(summary(arima_orders_weekly))
+
+# Forecast next 8 weeks (2 months)
+sales_forecast_weekly <- forecast(arima_sales_weekly, h = 8)
+orders_forecast_weekly <- forecast(arima_orders_weekly, h = 8)
+# Plot weekly forecasts
+par(mfrow = c(2, 1))
+plot(sales_forecast_weekly, main = "Weekly Sales Forecast - Next 8 Weeks")
+plot(orders_forecast_weekly, main = "Weekly Orders Forecast - Next 8 Weeks")
+
+# ETS model for weekly data
+ets_sales_weekly <- ets(weekly_sales_ts)
+ets_orders_weekly <- ets(weekly_orders_ts)
+# Forecast with ETS
+sales_forecast_ets <- forecast(ets_sales_weekly, h = 8)
+orders_forecast_ets <- forecast(ets_orders_weekly, h = 8)
+
+# Compare ARIMA vs ETS accuracy
+print("ARIMA Weekly Sales Accuracy:")
+print(accuracy(arima_sales_weekly))
+
+print("ETS Weekly Sales Accuracy:")
+print(accuracy(ets_sales_weekly))
+#model comparison and selection
+
+if(accuracy(arima_sales_weekly)[2] < accuracy(ets_sales_weekly)[2]) {
+  final_sales_forecast <- sales_forecast_weekly
+  model_used <- "ARIMA"
+} else {
+  final_sales_forecast <- sales_forecast_ets
+  model_used <- "ETS"
+}
+print(paste("Selected model for final forecast:", model_used))
+
+#Final forecast report
+forecast_weeks <- seq(max(weekly_data$year_week) + 7, by = "week", length.out = 8)
+final_weekly_forecast <- data.frame(
+  week_starting = forecast_weeks,
+  forecast_sales = as.numeric(final_sales_forecast$mean),
+  sales_lower_80 = as.numeric(final_sales_forecast$lower[,1]),
+  sales_upper_80 = as.numeric(final_sales_forecast$upper[,1]),
+  sales_lower_95 = as.numeric(final_sales_forecast$lower[,2]),
+  sales_upper_95 = as.numeric(final_sales_forecast$upper[,2]),
+  forecast_orders = as.numeric(orders_forecast_weekly$mean),
+  orders_lower_80 = as.numeric(orders_forecast_weekly$lower[,1]),
+  orders_upper_80 = as.numeric(orders_forecast_weekly$upper[,1]),
+  orders_lower_95 = as.numeric(orders_forecast_weekly$lower[,2]),
+  orders_upper_95 = as.numeric(orders_forecast_weekly$upper[,2])
+)
+print("8-Week Forecast:")
+print(final_weekly_forecast)
