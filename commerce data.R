@@ -106,3 +106,136 @@ ggplot(invoice_sizes, aes(x = items_in_invoice)) +
        x = "Number of Items in Invoice",
        y = "Count of Invoices") +
   theme_minimal()
+
+#load necessary libraries for RSF analysis
+library(lubridate)
+library(scales)
+library(cluster)
+library(factoextra)
+library(gridExtra)
+
+# Set theme for better visualizations
+theme_set(theme_minimal())
+
+#Calculate RFM
+set.seed(123)
+n_customers <- 1000
+
+commerce_data<- data.frame(
+  customer_id = paste0("C", 1:n_customers),
+  invoice_date = sample(seq(as.Date('2023-01-01'), as.Date('2024-01-15'), by="day"), n_customers, replace=TRUE),
+  invoice_no = round(runif(n_customers, 10, 500), 2),
+  unit_price = paste0("O", 1:n_customers)
+)
+
+print(colnames(commerce_data))
+
+# Convert invoice_no to numeric and handle any conversion issues
+commerce_data <- commerce_data %>%
+  mutate(invoice_no = as.numeric(as.character(invoice_no)))
+
+# Check for NA values after conversion
+sum(is.na(commerce_data$invoice_no))
+
+# Remove rows with NA invoice_no before RFM analysis
+commerce_data_clean <- commerce_data %>%
+  filter(!is.na(invoice_no))
+# Check how many rows remain
+nrow(commerce_data_clean)
+
+# Calculate RFM metrics
+rfm_data <- commerce_data_clean%>%
+  group_by(customer_id) %>%
+  summarise(
+    Recency = (max(invoice_no, na.rm = TRUE) - max(commerce_data$invoice_no, na.rm = TRUE)) * -1,
+    Frequency = n_distinct(invoice_no),
+    Monetary = sum(quantity*unit_price)
+  ) %>% 
+  mutate(
+    R_Score = ntile(desc(Recency), 5),
+    F_Score = ntile(Frequency, 5),
+    M_Score = ntile(Monetary, 5),
+    RFM_Score = paste(R_Score, F_Score, M_Score, sep = ""),
+    RFM_Segment = case_when(
+      R_Score >= 4 & F_Score >= 4 & M_Score >= 4 ~ "Champions",
+      R_Score >= 3 & F_Score >= 3 & M_Score >= 3 ~ "Loyal Customers",
+      R_Score >= 4 & F_Score >= 2 & M_Score >= 2 ~ "Potential Loyalists",
+      R_Score >= 3 & F_Score >= 1 & M_Score >= 1 ~ "New Customers",
+      R_Score >= 2 & F_Score >= 2 & M_Score >= 2 ~ "Promising",
+      R_Score >= 2 & F_Score >= 1 & M_Score >= 1 ~ "Need Attention",
+      R_Score >= 1 & F_Score >= 1 & M_Score >= 1 ~ "At Risk",
+      TRUE ~ "Lost Customers"
+    )
+  )
+# View the RFM results
+print(head(rfm_data))    
+
+#Segment analysis
+segment_analysis <- rfm_data %>%
+  group_by(RFM_Segment) %>%
+  summarise(
+    avg_recency = mean(Recency),
+    avg_frequency = mean(Frequency),
+    avg_monetary = mean(Monetary),
+    n_customers = n(),
+    percent = n() / nrow(rfm_data) * 100
+  ) %>%
+  arrange(desc(avg_monetary))
+
+print(segment_analysis)
+
+#Create an action plan for each segment
+segment_strategies <- rfm_data %>%
+  mutate(
+    recommended_action = case_when(
+      RFM_Segment == "Champions" ~ "Reward them, ask for reviews, premium offers",
+      RFM_Segment == "Loyal Customers" ~ "Upsell, loyalty programs, referral incentives",
+      RFM_Segment == "Potential Loyalists" ~ "Engage with personalized content, nurture relationships",
+      RFM_Segment == "New Customers" ~ "Welcome series, onboarding, educational content",
+      RFM_Segment == "Promising" ~ "Re-engagement campaigns, special offers",
+      RFM_Segment == "Need Attention" ~ "Win-back campaigns, surveys to understand drop-off",
+      RFM_Segment == "At Risk" ~ "Aggressive win-back, special discounts",
+      RFM_Segment == "Lost Customers" ~ "Reactivation campaigns or stop marketing to save costs"
+    )
+  )
+# View customer counts with recommended actions
+action_summary <- segment_strategies %>%
+  group_by(RFM_Segment, recommended_action) %>%
+  summarise(n_customers = n()) %>%
+  arrange(desc(n_customers))
+
+print(action_summary)
+
+#Visualize the results
+# Bar plot of segments
+ggplot(segment_summary, aes(x = reorder(RFM_Segment, n), y = n, fill = RFM_Segment)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  labs(title = "Customer Distribution by RFM Segment",
+       x = "RFM Segment", 
+       y = "Number of Customers") +
+  theme_minimal()
+# scatter plot for monetary vs frequency colored by recency
+ggplot(rfm_data, aes(x = Frequency, y = Monetary, color = as.factor(R_Score))) +
+  geom_point(alpha = 0.6) +
+  scale_color_brewer(palette = "RdYlGn", name = "Recency Score") +
+  labs(title = "RFM Analysis: Frequency vs Monetary Value",
+       x = "Frequency", 
+       y = "Monetary Value") +
+  theme_minimal()
+# Top 10 customers by monetary value
+top_customers <- rfm_data %>%
+  arrange(desc(Monetary)) %>%
+  head(10)
+print("Top 10 Customers by Spending:")
+print(top_customers)
+# Customers needing immediate attention (high value but at risk)
+at_risk_valuable <- rfm_data %>%
+  filter(RFM_Segment %in% c("At Risk", "Need Attention")) %>%
+  arrange(desc(Monetary)) %>%
+  head(10)
+print("High-Value Customers At Risk:")
+print(at_risk_valuable)
+# Export for business use
+write.csv(rfm_data, "rfm_analysis_results.csv", row.names = FALSE)
+write.csv(segment_strategies, "customer_segments_with_actions.csv", row.names = FALSE)
